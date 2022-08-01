@@ -1,0 +1,163 @@
+#Playbook final lab project - KodeKlode - Ansible
+#By Angel Contreras @angel_cntrs
+-
+  name: Install Firewall in DB and Web servers & configure firewall
+  hosts: db-server, web-server
+  become: yes
+  tasks:
+    - name: upgrade all packages
+      yum:
+        name: '*'
+        state: latest
+
+    - name: Install Firewall
+      yum:
+        name: firewalld
+        state: present
+      
+    - name: Start firewall service
+      service:
+        name: firewalld
+        state: started
+      
+    - name: Enable firewalld service
+      systemd:
+        name: firewalld
+        enabled: yes
+
+    - name: Configure firewall | Ports for DB and Web servers
+      firewalld:
+        zone: public
+        port: "{{item}}"
+        permanent: yes
+        state: enabled
+      with_items: 
+        - 3306/tcp
+        - 80/tcp
+
+    - name: Reload firewall service
+      service:
+        name: firewalld
+        state: reloaded
+
+-
+  name: Install MySQL in DB server and configure a DB ecomdb
+  hosts: db-server
+  become: yes
+  tasks:
+    - name: Enable EPEL Repository on CentOS 7
+      yum:
+        name: epel-release
+        state: latest
+
+    - name: Install MySQL
+      yum:
+        name: https://dev.mysql.com/get/mysql80-community-release-el7-5.noarch.rpm
+        state: present
+
+    - name: Ensure required packages are installed
+      yum:
+        state: present
+        name:
+          - epel-release
+          - python-pip
+          - python-devel
+          - mysql-devel
+          - mysql-server
+          - gcc
+          - MySQL-python
+          - git
+
+    - name: Configure MySQL | leaving the default port 3306 ...
+      command: date
+
+    - name: Start mysqld service
+      service:
+        name: mysqld
+        state: started
+
+    - name: Enable mysqld service
+      systemd:
+        name: mysqld
+        enabled: yes
+    
+    - name: Getting the temporary password of root@localhost # It's not exactly temporary, if you don't change it, it will always be the same.
+      shell: grep 'temporary password' /var/log/mysqld.log | awk 'NF{print $NF}'
+      register: pass_root #this var will save the root pass of login user of the DB 
+
+    - name: Configure Database | Create database user 'ecomuser' and password 'ecompassword' with all database privileges
+      mysql_user:
+        name: ecomuser
+        password: ecompassword
+        login_password: "{{pass_root.stdout}}"
+        check_implicit_admin: yes
+        priv: '*.*:ALL,GRANT'
+        host: '192.168.96.132' #web server
+        state: present
+
+    - name: Configure Database | Create a DB called ecomdb
+      mysql_db:
+        name: ecomdb
+        state: present
+        login_password: "{{pass_root.stdout}}"
+
+    - name: Load Data | Clone repo where is data of DB
+      git:
+        repo: https://github.com/kodekloudhub/learning-app-ecommerce.git
+        dest: ~/Desktop/learning-app-ecommerce/
+
+    - name: Load Data | Loading data to the DB
+     mysql_db:
+       login_password: "{{pass_root.stdout}}"
+       name: ecomdb
+       state: import
+       target: ~/Desktop/learning-app-ecommerce/assets/db-load-script.sql
+
+-
+  name: Install httpd and PHP in Web server & configure it
+  hosts: web-server
+  become: yes
+  tasks:
+    - name: Install httpd
+      yum:
+        name:
+          - httpd
+          - php
+          - php-mysql
+          - git
+        state: present
+
+    - name: Change DirectoryIndex index.html to DirectoryIndex index.php to make the php page the default page
+      replace:
+        path: /etc/httpd/conf/httpd.conf
+        regexp: "DirectoryIndex index.html"
+        replace: "DirectoryIndex index.php"
+
+    - name: Start httpd service
+      service:
+        name: httpd
+        state: started
+      
+    - name: Enable httpd service
+      systemd:
+        name: httpd
+        enabled: yes
+
+    - name: Download the code
+      git:
+        repo: https://github.com/kodekloudhub/learning-app-ecommerce.git
+        dest: /var/www/html/
+        force: yes
+
+    - name: Update index.php to use the right database address. Name and credencials are set-up ok
+      replace:
+        path: /var/www/html/index.php
+        regexp: '172.20.1.101' #This is the ip to change 
+        replace: '192.168.96.134' # for this one that refers to DB server
+        
+    - name: Set httpd_can_network_connect_db flag on and keep it persistent across reboots #this is to fix the error connection to the DB
+      seboolean:
+        name: httpd_can_network_connect_db
+        state: yes
+        persistent: yes
+
